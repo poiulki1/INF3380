@@ -13,7 +13,7 @@ struct Matrix{
 void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int my_m,
 					   int my_n, int procs_per_dim, int mycoords[2], MPI_Comm *comm_col,
 					   MPI_Comm *comm_row);
-
+void MatrixMultiply(double **a, double **b, double **c, int m, int n, int l);
 void read_matrix_bin(struct Matrix *mat);
 void write_matrix_bin(struct Matrix *mat);
 void alloc_matrix(struct Matrix *mat, int row_num, int col_num);
@@ -46,8 +46,12 @@ int main(int argc, char *argv[])
 		alloc_matrix(&C, A.num_rows, B.num_cols);
 		temp_rows = A.num_rows;
 		temp_cols = A.num_cols;
+
+		//MatrixMultiply(A.array, B.array, C.array, A.num_rows, B.num_cols,
+		//		   B.num_rows);
 	}
 
+	
 	dims[0] = dims[1] = sp;
     periods[0] = periods[1] = 1;
 
@@ -67,13 +71,27 @@ int main(int argc, char *argv[])
 	struct Matrix my_matrix_A, my_matrix_B;
 	alloc_matrix(&my_matrix_A, my_rows, my_cols);
 	alloc_matrix(&my_matrix_B, my_cols, my_rows); // B = transponert A
-	
+	printf("HAHA \n");
 	distribute_matrix(my_matrix_A.array, A.array, A.num_rows, A.num_cols,
 					  my_matrix_A.num_rows, my_matrix_A.num_cols, sp, mycoords,
 					  &comm_col, &comm_row);
-	
+	printf("HAHAHAH\n");
 	MPI_Finalize();
     return 0;
+}
+
+/* This matrix performs a serial matrix-matrix multiplication c = a * b. */
+void MatrixMultiply(double **a, double **b, double **c, int m, int n, int l)
+{
+	int i, j, k;
+	for (i=0; i < m; i++){
+		for (j=0; j < n; j++){
+			for (k=0; k < l; k++){
+				c[i][j] += a[i][k] * b[k][j];
+			}
+		}
+	}
+    return;
 }
 
 /* The meat of the program. Read through carefully. Two lines have been dummied out! */
@@ -95,6 +113,7 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int m
 
     if (mycoords[0] == 0 && mycoords[1] == 0)
     {
+		printf("1st check \n");
         senddata_columnwise = *whole_matrix;
     }
 /* Step 1. Only first column participates. */
@@ -102,6 +121,7 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int m
     {
         if (mycoords[0] == 0)
         {
+			printf("2nd check \n");
             everyones_m = (int *) calloc(procs_per_dim, sizeof(int));
             sendcounts_y = (int *)calloc(procs_per_dim, sizeof(int));
             displs_y = (int *)calloc(procs_per_dim + 1, sizeof(int));
@@ -111,17 +131,19 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int m
 
         if (mycoords[0] == 0)
         {
+			printf("3rd check \n");
             displs_y[0] = 0;
-            for (int i = 0; i < procs_per_dim; ++i)
+            for (int i = 0; i < procs_per_dim; i++)
             {
+				printf("4th check \n");
                 sendcounts_y[i] = n * everyones_m[i];
                 displs_y[i + 1] = displs_y[i] + sendcounts_y[i];
             }
         }
-		
+		printf("5th check \n");
         senddata_rowwise = (double *) calloc(my_m * n, sizeof(double));
 
-        //MPI_Scatterv(senddata_columnwise, sendcounts_y, displs_y, MPI_DOUBLE, senddata_rowwise, my_m * n, MPI_DOUBLE, 0, *comm_col);
+        MPI_Scatterv(senddata_columnwise, sendcounts_y, displs_y, MPI_DOUBLE, senddata_rowwise, my_m * n, MPI_DOUBLE, 0, *comm_col);
     }
 
     /* Step 2: Send data rowwise. */
@@ -139,6 +161,7 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int m
 
     if (mycoords[1] == 0)
     {
+		printf("6th check \n");
         everyones_n = (int *) calloc(procs_per_dim, sizeof(int));
         sendcounts_x = (int *) calloc(procs_per_dim, sizeof(int));
         displs_x = (int *) calloc(procs_per_dim + 1, sizeof(int));
@@ -148,7 +171,7 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int m
 
     if (mycoords[1] == 0)
     {
-
+		printf("7th check \n");
         displs_x[0] = 0;
         for (int i = 0; i < procs_per_dim; ++i)
         {
@@ -169,19 +192,23 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int m
 
     if (mycoords[1] == 0)
     {
+		printf("8th check \n");
         free(displs_x);
         free(sendcounts_x);
+		printf("AJSAJFSKAF");
         MPI_Type_free(&columntype_scatter);
         MPI_Type_free(&columntype);
-
+		
         if (mycoords[0] == 0)
         {
+			printf("9th check \n");
             free(displs_y);
             free(sendcounts_y);
         }
-
+		
         free(senddata_rowwise);
     }
+	printf("10th check \n");
 }
 
 void alloc_matrix(struct Matrix *mat, int row_num, int col_num){
