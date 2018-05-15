@@ -21,13 +21,14 @@ void alloc_matrix(struct Matrix *mat, int row_num, int col_num);
 int main(int argc, char *argv[])
 {
     int my_rank, num_procs;
-	int temp_rows, temp_cols;
-	int my_rows, my_cols;
-	int sp;
-	
+	int temp_rows_a, temp_cols_a, temp_rows_b, temp_cols_b;
+	int my_rows_a, my_cols_a, my_rows_b, my_cols_b;
+	int sp, biggest_l;
+	int shiftsource, shiftdest;
+	int *everyones_l;
 	int dims[2], periods[2], my2drank, mycoords[2];
 	MPI_Comm comm_2d, comm_col, comm_row;
-	
+	MPI_Status status;
 	
 	MPI_Init(&argc, &argv);
 	MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
@@ -46,12 +47,15 @@ int main(int argc, char *argv[])
 		read_matrix_bin(&B);
 		alloc_matrix(&C, A.num_rows, B.num_cols);
 		write_matrix_bin(&C);
-		temp_rows = A.num_rows;
-		temp_cols = A.num_cols;
+		temp_rows_a = A.num_rows; temp_cols_a = A.num_cols;
+		temp_rows_b = B.num_rows; temp_cols_b = B.num_cols;
 	}
 	//Broadcast size of the matrix
-	MPI_Bcast(&temp_rows, 1, MPI_INT, 0, MPI_COMM_WORLD);
-	MPI_Bcast(&temp_cols, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	MPI_Bcast(&temp_rows_a, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	MPI_Bcast(&temp_cols_a, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	
+	MPI_Bcast(&temp_rows_b, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	MPI_Bcast(&temp_cols_b, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
 	//MPI grid
 	dims[0] = dims[1] = sp;
@@ -65,16 +69,36 @@ int main(int argc, char *argv[])
     MPI_Cart_sub(comm_2d, (int[]){0, 1}, &comm_row);
     MPI_Cart_sub(comm_2d, (int[]){1, 0}, &comm_col);
 	
-	my_rows = temp_rows/sp + (mycoords[0] < temp_rows%sp);
-	my_cols =temp_cols/sp + (mycoords[1] < temp_cols%sp);
+	my_rows_a = temp_rows_a/sp + (mycoords[0] < temp_rows_a%sp);
+	my_cols_a = temp_cols_a/sp + (mycoords[1] < temp_cols_a%sp);
 
-	struct Matrix my_matrix_A, my_matrix_B;
-	alloc_matrix(&my_matrix_A, my_rows, my_cols);
-	alloc_matrix(&my_matrix_B, my_cols, my_rows); // B = transponert A
+	my_rows_b = temp_rows_b/sp + (mycoords[0] < temp_rows_b%sp);
+	my_cols_b = temp_cols_b/sp + (mycoords[1] < temp_cols_b%sp);
+
+	struct Matrix my_matrix_A, my_matrix_B, my_matrix_C;
+	if(my_rank == 0){
+		everyones_l = (int *) calloc(sp, sizeof(int));
+	}
+
+	MPI_Gather(&my_cols_a, 1, MPI_INT, everyones_l, 1, MPI_INT, 0, comm_2d);
+	if(my_rank == 0){
+		biggest_l = everyones_l[0];
+		}
 	
-	distribute_matrix(my_matrix_A.array, A.array, A.num_rows, A.num_cols,
-					  my_rows, my_cols, sp, mycoords,
-					  &comm_col, &comm_row);
+	MPI_Bcast(&biggest_l, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	alloc_matrix(&my_matrix_A, my_rows_a, biggest_l); //my_cols_a => biggest_l
+	alloc_matrix(&my_matrix_B, biggest_l, my_cols_b); //my_rows_b => biggest_l
+	alloc_matrix(&my_matrix_C, my_rows_a, my_cols_b);
+	
+	distribute_matrix(my_matrix_A.array, A.array, temp_cols_a, temp_rows_a,
+					  my_rows_a, my_cols_a, sp, mycoords, &comm_col, &comm_row);
+	
+	distribute_matrix(my_matrix_B.array, B.array, temp_rows_b, temp_cols_b,
+					  my_rows_b, my_cols_b, sp, mycoords, &comm_col, &comm_row);
+
+	MPI_Cart_shift(comm_2d, 0, -mycoords[0], &shiftsource, &shiftdest);
+//	MPI_Sendrecv_replace(A.array, my_rows_a*my_cols_a, MPI_DOUBLE, shiftdest, 1,
+//						 shiftsource, 1, comm_2d, &status);
 	
 	MPI_Finalize();
     return 0;
@@ -137,7 +161,7 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int m
         }
         senddata_rowwise = (double *) calloc(my_m * n, sizeof(double));
 
-        //MPI_Scatterv(senddata_columnwise, sendcounts_y, displs_y, MPI_DOUBLE, senddata_rowwise, my_m * n, MPI_DOUBLE, 0, *comm_col);
+        MPI_Scatterv(senddata_columnwise, sendcounts_y, displs_y, MPI_DOUBLE, senddata_rowwise, my_m * n, MPI_DOUBLE, 0, *comm_col);
     }
 
     /* Step 2: Send data rowwise. */
@@ -169,7 +193,6 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int m
         {
             sendcounts_x[i] = everyones_n[i];
             displs_x[i + 1] = displs_x[i] + sendcounts_x[i];
-
         }
     }
 
