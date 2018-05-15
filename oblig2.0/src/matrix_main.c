@@ -23,7 +23,7 @@ int main(int argc, char *argv[])
     int my_rank, num_procs;
 	int temp_rows, temp_cols;
 	int my_rows, my_cols;
-	int my_i, my_j, sp;
+	int sp;
 	
 	int dims[2], periods[2], my2drank, mycoords[2];
 	MPI_Comm comm_2d, comm_col, comm_row;
@@ -41,9 +41,11 @@ int main(int argc, char *argv[])
 	if(my_rank == 0){
 		A.filename = "../small_matrix_a.bin";
 		B.filename = "../small_matrix_b.bin";
+		C.filename = "../small_matrix_c_result.bin";
 		read_matrix_bin(&A);
 		read_matrix_bin(&B);
 		alloc_matrix(&C, A.num_rows, B.num_cols);
+		write_matrix_bin(&C);
 		temp_rows = A.num_rows;
 		temp_cols = A.num_cols;
 
@@ -51,6 +53,8 @@ int main(int argc, char *argv[])
 		//		   B.num_rows);
 	}
 
+	MPI_Bcast(&temp_rows, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	MPI_Bcast(&temp_cols, 1, MPI_INT, 0, MPI_COMM_WORLD);
 	
 	dims[0] = dims[1] = sp;
     periods[0] = periods[1] = 1;
@@ -63,8 +67,6 @@ int main(int argc, char *argv[])
     MPI_Cart_sub(comm_2d, (int[]){0, 1}, &comm_row);
     MPI_Cart_sub(comm_2d, (int[]){1, 0}, &comm_col);
 	
-	MPI_Bcast(&temp_rows, 1, MPI_INT, 0, MPI_COMM_WORLD);
-	MPI_Bcast(&temp_cols, 1, MPI_INT, 0, MPI_COMM_WORLD);
 	my_rows = temp_rows/sp + (mycoords[0] < temp_rows%sp);
 	my_cols =temp_cols/sp + (mycoords[1] < temp_cols%sp);
 
@@ -73,7 +75,7 @@ int main(int argc, char *argv[])
 	alloc_matrix(&my_matrix_B, my_cols, my_rows); // B = transponert A
 	printf("HAHA \n");
 	distribute_matrix(my_matrix_A.array, A.array, A.num_rows, A.num_cols,
-					  my_matrix_A.num_rows, my_matrix_A.num_cols, sp, mycoords,
+					  my_rows, my_cols, sp, mycoords,
 					  &comm_col, &comm_row);
 	printf("HAHAHAH\n");
 	MPI_Finalize();
@@ -113,7 +115,6 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int m
 
     if (mycoords[0] == 0 && mycoords[1] == 0)
     {
-		printf("1st check \n");
         senddata_columnwise = *whole_matrix;
     }
 /* Step 1. Only first column participates. */
@@ -121,7 +122,6 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int m
     {
         if (mycoords[0] == 0)
         {
-			printf("2nd check \n");
             everyones_m = (int *) calloc(procs_per_dim, sizeof(int));
             sendcounts_y = (int *)calloc(procs_per_dim, sizeof(int));
             displs_y = (int *)calloc(procs_per_dim + 1, sizeof(int));
@@ -131,16 +131,13 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int m
 
         if (mycoords[0] == 0)
         {
-			printf("3rd check \n");
             displs_y[0] = 0;
             for (int i = 0; i < procs_per_dim; i++)
             {
-				printf("4th check \n");
                 sendcounts_y[i] = n * everyones_m[i];
                 displs_y[i + 1] = displs_y[i] + sendcounts_y[i];
             }
         }
-		printf("5th check \n");
         senddata_rowwise = (double *) calloc(my_m * n, sizeof(double));
 
         MPI_Scatterv(senddata_columnwise, sendcounts_y, displs_y, MPI_DOUBLE, senddata_rowwise, my_m * n, MPI_DOUBLE, 0, *comm_col);
@@ -216,6 +213,9 @@ void alloc_matrix(struct Matrix *mat, int row_num, int col_num){
 	mat->num_cols = col_num;
 	mat->array = (double**)calloc(row_num, sizeof(double*));
 	mat->array[0] = (double*)calloc(row_num*col_num, sizeof(double));
+	for(int i=1; i<row_num; i++){
+		mat->array[i] = mat->array[i-1] + col_num;
+	}
 }
 
 void read_matrix_bin(struct Matrix *mat){
