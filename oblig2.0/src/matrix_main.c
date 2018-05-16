@@ -13,7 +13,7 @@ struct Matrix{
 void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int my_m,
 					   int my_n, int procs_per_dim, int mycoords[2], MPI_Comm *comm_col,
 					   MPI_Comm *comm_row);
-void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C);
+void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C, int m, int n, int l);
 void read_matrix_bin(struct Matrix *mat);
 void write_matrix_bin(struct Matrix *mat);
 void alloc_matrix(struct Matrix *mat, int row_num, int col_num);
@@ -25,6 +25,8 @@ int main(int argc, char *argv[])
 	int my_rows_a, my_cols_a, my_rows_b, my_cols_b;
 	int sp, biggest_l;
 	int shiftsource, shiftdest;
+	int leftrank, rightrank;
+	int uprank, downrank;
 	int *everyones_l;
 	int dims[2], periods[2], my2drank, mycoords[2];
 	MPI_Comm comm_2d, comm_col, comm_row;
@@ -68,49 +70,77 @@ int main(int argc, char *argv[])
 
     MPI_Cart_sub(comm_2d, (int[]){0, 1}, &comm_row);
     MPI_Cart_sub(comm_2d, (int[]){1, 0}, &comm_col);
-	
+
 	my_rows_a = temp_rows_a/sp + (mycoords[0] < temp_rows_a%sp);
 	my_cols_a = temp_cols_a/sp + (mycoords[1] < temp_cols_a%sp);
 
 	my_rows_b = temp_rows_b/sp + (mycoords[0] < temp_rows_b%sp);
 	my_cols_b = temp_cols_b/sp + (mycoords[1] < temp_cols_b%sp);
 
-	struct Matrix my_matrix_A, my_matrix_B, my_matrix_C;
-	if(my_rank == 0){
-		everyones_l = (int *) calloc(sp, sizeof(int));
-	}
-
-	MPI_Gather(&my_cols_a, 1, MPI_INT, everyones_l, 1, MPI_INT, 0, comm_2d);
-	if(my_rank == 0){
-		biggest_l = everyones_l[0];
-		}
+//	printf("rank = %d %d ;; my_cols_a = %d ;; my_rows_b = %d \n", mycoords[0],
+	//	   mycoords[1], my_cols_a, my_rows_b);
+//	printf("_____\n");
 	
+	struct Matrix my_matrix_A, my_matrix_B, my_matrix_C;
+	if(mycoords[0] == 0 && mycoords[1] == 0){biggest_l = my_cols_a;}
 	MPI_Bcast(&biggest_l, 1, MPI_INT, 0, MPI_COMM_WORLD);
-	alloc_matrix(&my_matrix_A, my_rows_a, biggest_l); //my_cols_a => biggest_l
-	alloc_matrix(&my_matrix_B, biggest_l, my_cols_b); //my_rows_b => biggest_l
+	
+	alloc_matrix(&my_matrix_A, my_rows_a, biggest_l); 
+	alloc_matrix(&my_matrix_B, biggest_l, my_cols_b); 
 	alloc_matrix(&my_matrix_C, my_rows_a, my_cols_b);
 	
 	distribute_matrix(my_matrix_A.array, A.array, temp_cols_a, temp_rows_a,
 					  my_rows_a, my_cols_a, sp, mycoords, &comm_col, &comm_row);
 	
 	distribute_matrix(my_matrix_B.array, B.array, temp_rows_b, temp_cols_b,
-					  my_rows_b, my_cols_b, sp, mycoords, &comm_col, &comm_row);
+					  my_rows_b, my_cols_b, sp, mycoords, &comm_col,
+					  &comm_row);
+	
+	MPI_Cart_shift(comm_2d, 1, -1, &rightrank, &leftrank);
+	MPI_Cart_shift(comm_2d, 0, -1, &downrank, &uprank);
 
-	MPI_Cart_shift(comm_2d, 0, -mycoords[0], &shiftsource, &shiftdest);
-//	MPI_Sendrecv_replace(A.array, my_rows_a*my_cols_a, MPI_DOUBLE, shiftdest, 1,
-//						 shiftsource, 1, comm_2d, &status);
+	//Initial matrix alignment for A
+	MPI_Cart_shift(comm_2d, 1, -mycoords[0], &shiftsource, &shiftdest);
+	MPI_Sendrecv_replace(*my_matrix_A.array, my_rows_a*biggest_l, MPI_DOUBLE, shiftdest, 1,
+					 shiftsource, 1, comm_2d, &status);
+
+	MPI_Sendrecv_replace(&my_cols_a, 1, MPI_INT, shiftdest, 1,
+						 shiftsource, 1, comm_2d, &status);
+	MPI_Sendrecv_replace(&my_rows_a, 1, MPI_INT, shiftdest, 1,
+						 shiftsource, 1, comm_2d, &status);
+	
+	//Initial matrix alignment for B
+	MPI_Cart_shift(comm_2d, 0, -mycoords[1], &shiftsource, &shiftdest);
+	MPI_Sendrecv_replace(*my_matrix_B.array, biggest_l*my_cols_b, MPI_DOUBLE, shiftdest, 1,
+					 shiftsource, 1, comm_2d, &status);
+
+	MPI_Sendrecv_replace(&my_cols_b, 1, MPI_INT, shiftdest, 1,
+						 shiftsource, 1, comm_2d, &status);
+	
+	//main calculation loop
+	for(int i = 0; i < sp; i++){
+		MatrixMultiply(&my_matrix_A, &my_matrix_B, &my_matrix_C, my_rows_a,
+					   my_cols_b, my_cols_a); // c = c + (a*b)
+		//matrix A shift to the left by one
+		MPI_Sendrecv_replace(*my_matrix_A.array, my_rows_a*biggest_l, MPI_DOUBLE, leftrank, 1,
+						 rightrank, 1, comm_2d, &status);
+		//matrix B shift up by one
+		MPI_Sendrecv_replace(*my_matrix_B.array, my_cols_b*biggest_l, MPI_DOUBLE, uprank, 1,
+						 downrank, 1, comm_2d, &status);
+	}
 	
 	MPI_Finalize();
     return 0;
 }
 
 /* This matrix performs a serial matrix-matrix multiplication c = a * b. */
-void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C)
+void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C,
+					int m, int n, int l)
 {
 	int i, j, k;
-	for (i=0; i < A->num_rows; i++){
-		for (j=0; j < B->num_cols; j++){
-			for (k=0; k < B->num_rows; k++){
+	for (i=0; i < m /*A->num_rows*/; i++){
+		for (j=0; j < n/*B->num_cols*/; j++){
+			for (k=0; k < l/*B->num_rows*/; k++){
 				C->array[i][j] += A->array[i][k] * B->array[k][j];
 			}
 		}
@@ -238,8 +268,8 @@ void read_matrix_bin(struct Matrix *mat){
 	fread(&(mat->num_cols), sizeof(int), 1, fp);
 
 	/* storage allocation of the matrix */
-	mat->array = (double**)malloc((mat->num_rows)*sizeof(double*));
-	mat->array[0] = (double*)malloc((mat->num_rows)*(mat->num_cols)*sizeof(double));
+	mat->array = (double**)calloc((mat->num_rows),sizeof(double*));
+	mat->array[0] = (double*)calloc((mat->num_rows)*(mat->num_cols),sizeof(double));
 	for(i = 1; i < (mat->num_rows); i++){
 		mat->array[i] = mat->array[i-1] + (mat->num_cols);
 	}
